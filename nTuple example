@@ -1,0 +1,233 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[1]:
+
+
+import uproot
+import awkward as ak
+import vector
+import numpy as np
+import glob
+
+
+# In[2]:
+
+
+from tqdm import tqdm
+
+
+# In[49]:
+
+
+def Eagles(filepath, filetype):
+    allfiles = glob.glob(filepath) #glob.golb : 파일을 불러들이는 함수
+    filelist = []
+    for f in allfiles:
+        filelist.append(f+':Delphes')
+
+    branches = ['Electron.PT', 'Electron.Phi', 'Electron.Eta', 'MuonTight.PT', 'MuonTight.Phi' , 'MuonTight.Eta','JetPUPPI.PT','JetPUPPI.Eta','JetPUPPI.Phi','JetPUPPI.Mass','JetPUPPI.BTag' ,'PuppiMissingET.MET' ,'PuppiMissingET.Phi']
+
+    histo = {}
+    count = 0
+    # FIle loop
+    for arrays, doc in tqdm(uproot.iterate(filelist, branches, report = True)): #report = True ???
+        print("from : {0}, to {1} -- Entries : {2}".format(doc.start, doc.stop, len(arrays)))
+    
+        Electron = ak.zip(
+        {
+            "PT" : arrays[b"Electron.PT"],
+            "Phi" : arrays[b"Electron.Phi"],
+            "Eta" : arrays[b"Electron.Eta"]
+        
+        })
+        
+        Muon = ak.zip(
+        {
+            "PT" : arrays[b"MuonTight.PT"],
+            "Phi" : arrays[b"MuonTight.Phi"],
+            "Eta" : arrays[b"MuonTight.Eta"]
+        })
+        
+        
+        Jet = ak.zip(
+        {
+            "PT" : arrays[b"JetPUPPI.PT"],
+            "Eta" : arrays[b"JetPUPPI.Eta"],
+            "Phi" : arrays[b"JetPUPPI.Phi"],
+            "Mass" : arrays[b"JetPUPPI.Mass"],
+            "BTag" : arrays[b"JetPUPPI.BTag"]
+        })
+        
+        MET = ak.zip(
+        {
+            "PT" : arrays[b"PuppiMissingET.MET"],
+            "Phi" : arrays[b"PuppiMissingET.Phi"]
+        })
+       
+    
+        # Preselection
+        
+        ## Lepton veto
+        Veto_E = Electron[Electron.PT>10]
+        Veto_M = Muon[Muon.PT>10]  # Lepton PT가 10 이하인 것을 cut
+        Veto_L = (ak.num(Veto_E)+ak.num(Veto_M)) == 1  # cut을 한 Lepton이 한 개 나오는 event를 선택
+        Jet = Jet[Veto_L]  # PT가 10 GeV 이상인 Lepton이 한 개 나오는 event의 Jet과 MET
+        MET = MET[Veto_L]
+        
+        Lepton = ak.concatenate((Veto_E, Veto_M), axis = 1) # axis = 0은 가로축 axis = 1은 세로축을 합친다.
+        Lepton = Lepton[Veto_L]
+        ## Jet select
+        
+        Sel_Jet_num= ak.num(Jet.PT) >= 4 #Jet이 4개 이상 나오는 event 선택
+        Jet = Jet[Sel_Jet_num]  # mask로 적용
+        MET = MET[Sel_Jet_num]  # Jet이 4개 이상 나오는 event의 MET 선택
+        Lepton = Lepton[Sel_Jet_num]
+        
+        # Sel_Jet_PT = Jet.PT >= 30  #이렇게 두게 되면 MET와 Jet의 배열이 안 맞아서 error        
+        #Jet.PT는 PT가 큰 순서대로 나열되기 때문에 4번째 자리에 있는 PT가 30 이상이면 fourth leading jet>=30 GeV의 cut을 주는 것
+        
+        Sel_Jet_PT = []
+        for event_idx in range(len(Jet.PT)):
+            if Jet.PT[event_idx][2] >= 30: #3번째 자리에 있는 jet의 pt가 30 이상이면
+                Sel_Jet_PT.append(True)
+            else:
+                Sel_Jet_PT.append(False)
+        
+        Jet = Jet[Sel_Jet_PT] #Jet이 4개 이상 나오는 event + 30 GeV 이상인 event 선택
+        MET = MET[Sel_Jet_PT]
+        Lepton = Lepton[Sel_Jet_PT]
+        
+        ## B Tagging
+        BTag = Jet.BTag > 30 #  BTag 점수가 30점 이상인 것을 선택
+        BJet = Jet[BTag]
+        
+        
+        Sel_BJet_num = ak.num(BJet) >= 1  #BJet이 1개 이상인 것 선택 (약 65% 확률로 B Tag)
+        Jet = Jet[Sel_BJet_num]  #mask로 적용
+        MET = MET[Sel_BJet_num]
+        BJet = BJet[Sel_BJet_num]
+        Lepton = Lepton[Sel_BJet_num]
+                
+        ## MET
+        Sel_MET = MET.PT >= 50
+        Sel_MET = ak.flatten(Sel_MET)
+        Jet = Jet[Sel_MET]
+        MET = MET[Sel_MET]
+        BJet = BJet[Sel_MET]
+        Lepton = Lepton[Sel_MET]
+        
+        
+        ## MT
+        MT = np.sqrt(2*Lepton.PT*MET.PT*(1-np.cos(abs(Lepton.Phi-MET.Phi))))
+    
+        ### Fill NTuple
+        if len(histo) == 0:
+
+            histo['MET_PT'] = MET.PT
+            histo['MET_Phi'] = MET.Phi
+            histo['Jet_PT'] = Jet.PT
+            histo['Jet_Eta'] = Jet.Eta
+            histo['Jet_Phi'] = Jet.Phi
+            histo['Jet_Mass'] = Jet.Mass
+            histo['Lepton_PT'] = Lepton.PT
+            histo['Lepton_Eta'] = Lepton.Eta
+            histo['Lepton_Phi'] = Lepton.Phi
+            histo['MT'] = MT
+        
+            
+        else:
+
+            histo['MET_PT'] = np.concatenate((histo['MET_PT'], MET.PT))
+            histo['MET_Phi'] = np.concatenate((histo['MET_Phi'], MET.Phi))
+            histo['Jet_PT'] = np.concatenate((histo['Jet_PT'], Jet.PT))
+            histo['Jet_Eta'] = np.concatenate((histo['Jet_Eta'], Jet.Eta))
+            histo['Jet_Phi'] = np.concatenate((histo['Jet_Phi'], Jet.Phi))
+            histo['Jet_Mass'] = np.concatenate((histo['Jet_Mass'], Jet.Mass))
+            histo['Lepton_PT'] = np.concatenate((histo['Lepton_PT'], Lepton.PT))
+            histo['Lepton_Eta'] = np.concatenate((histo['Lepton_Eta'], Lepton.Eta))
+            histo['Lepton_Phi'] = np.concatenate((histo['Lepton_Phi'], Lepton.Phi))
+            histo['MT'] = np.concatenate((histo['MT'], MT))
+            
+    np.save(folder+filetype+"_nTuple", histo)
+
+
+# In[5]:
+
+
+#filepath = '../Public/Documents/전공탐구프로젝트/root/Del/TTBarSignalDel*'
+
+
+# In[47]:
+
+
+#Lepton.PT
+
+
+# In[45]:
+
+
+#ak.sum(Jet.Eta, axis=1)[0]
+
+
+# In[11]:
+
+
+label_list = ["FH_2", "1l_2", "2l_2", "TTW", "TTZ", "WW", "WZ", "ZZ"]
+'''
+label = ["signal_1GeV_01", "signal_1GeV_10"]
+path = ["/home/sgjeong/workspace/MG5_aMC_v2_6_7/ttb_xd_1GeV/rootfile/ttb_xd_1GeV_01*",
+	"/home/sgjeong/workspace/MG5_aMC_v2_6_7/ttb_xd_1GeV/rootfile/ttb_xd_1GeV_10*"]
+'''
+# In[37]:
+path_list = ["/x6/spool/twkim/MC/genproductions/bin/MadGraph5_aMCatNLO/condor/TTTo4j/lheOut/rootOut/*.root",
+"/x6/spool/twkim/MC/genproductions/bin/MadGraph5_aMCatNLO/condor/TTToSemilepton/lheOut/rootOut/*.root",
+"/x6/spool/twkim/MC/genproductions/bin/MadGraph5_aMCatNLO/condor/TTTo2l2v/lheOut/rootOut/*.root",
+"/x6/spool/twkim/MC/genproductions/bin/MadGraph5_aMCatNLO/condor/TTWToInclusive/lheOut/rootOut/*.root",
+"/x6/spool/twkim/MC/genproductions/bin/MadGraph5_aMCatNLO/condor/TTZToInclusive/lheOut/rootOut/*.root",
+"/x6/spool/bjpark/condor/condorplace/WW/rootOut/*.root",
+"/x6/spool/bjpark/condor/condorplace/WZ/rootOut/*.root",
+"/x6/spool/bjpark/condor/condorplace/ZZ/rootOut/*.root"]
+
+'''
+	"/x4/cms/jyshin/TT_1l/condorDelPyOut/TT_1l_*.root",
+	"/x4/cms/twkim/MCEVENTS/TT_2l_200PU_PWG2_e05.root",
+        "/x4/cms/jyshin/TT_Had/condorDelPyOut/TT_Had_*.root",
+	"/home/sgjeong/workspace/MG5_aMC_v2_6_7/ttb_xd/rootfile/ttb_xd_01*",
+	"/home/sgjeong/workspace/MG5_aMC_v2_6_7/ttb_xd/rootfile/ttb_xd_02*",
+	"/home/sgjeong/workspace/MG5_aMC_v2_6_7/ttb_xd/rootfile/ttb_xd_03*",
+        "/home/sgjeong/workspace/MG5_aMC_v2_6_7/ttb_xd/rootfile/ttb_xd_04*",
+        "/home/sgjeong/workspace/MG5_aMC_v2_6_7/ttb_xd/rootfile/ttb_xd_05*",
+        "/home/sgjeong/workspace/MG5_aMC_v2_6_7/ttb_xd/rootfile/ttb_xd_06*",
+        "/home/sgjeong/workspace/MG5_aMC_v2_6_7/ttb_xd/rootfile/ttb_xd_07*",
+        "/home/sgjeong/workspace/MG5_aMC_v2_6_7/ttb_xd/rootfile/ttb_xd_08*",
+        "/home/sgjeong/workspace/MG5_aMC_v2_6_7/ttb_xd/rootfile/ttb_xd_09*",
+        "/home/sgjeong/workspace/MG5_aMC_v2_6_7/ttb_xd/rootfile/ttb_xd_10*"]
+'''
+# In[13]:
+
+
+folder = '/home/sgjeong/workspace/ttb_preselection/'
+
+
+
+
+#folder = './My_NTuple/'
+
+
+# In[13]:
+
+for i in range(0, len(label_list)):
+	Eagles(path_list[i], label_list[i])
+
+# In[35]:
+
+
+
+
+
+# In[36]:
+
+
+#data.sum()['Lepton']
+
